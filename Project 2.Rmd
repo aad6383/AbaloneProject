@@ -1,0 +1,154 @@
+---
+title: "Project 2"
+author: "Aayush Dalal"
+date: "2025-12-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# ================================
+# Abalone Age Prediction - Objective A
+# ================================
+
+# Load packages
+library(tidyverse)
+
+# ----------------
+# 1. Load the data
+# ----------------
+
+# Training data
+train <- read.csv("train2.csv")
+
+# Competition data
+competition <- read.csv("competition.csv")
+
+# Check structures (optional)
+str(train)
+str(competition)
+
+# Make sure Sex is a factor in both
+train$Sex <- factor(train$Sex)
+competition$Sex <- factor(competition$Sex, levels = levels(train$Sex))
+
+# -------------------------------
+# 2. Train / Test Split (80 / 20)
+# -------------------------------
+
+set.seed(123)  # for reproducibility
+n <- nrow(train)
+train_idx <- sample(seq_len(n), size = floor(0.8 * n))
+
+train_set <- train[train_idx, ]
+test_set  <- train[-train_idx, ]
+
+# -------------------------------
+# 3. Fit Full Linear Regression
+# -------------------------------
+
+# Start with all predictors (including id; step() will decide)
+lm_full <- lm(Age ~ ., data = train_set)
+summary(lm_full)
+
+# --------------------------------------
+# 4. Stepwise Model Selection (AIC-based)
+# --------------------------------------
+
+lm_step <- step(lm_full, direction = "both", trace = TRUE)
+summary(lm_step)
+
+# At this point, lm_step should look very similar to what you posted:
+# Age ~ SexI + SexM + Length + Height + Weight + Shucked.Weight +
+#       Viscera.Weight + Shell.Weight
+# (The exact formula is stored in formula(lm_step))
+
+# ---------------------------------------
+# 5. Evaluate on Test Set (Compute MAE)
+# ---------------------------------------
+
+test_pred <- predict(lm_step, newdata = test_set)
+
+MAE <- mean(abs(test_set$Age - test_pred))
+MAE
+# You can print this nicely:
+cat("Test MAE:", round(MAE, 3), "\n")
+
+# ---------------------------------------------------
+# 6. Refit Final Model on ALL Training Data (Optional
+#    but recommended for best competition performance)
+# ---------------------------------------------------
+
+# Use the same formula that step() selected
+final_formula <- formula(lm_step)
+final_formula
+
+lm_final <- lm(final_formula, data = train)
+summary(lm_final)
+
+# -----------------------------------------
+# 7. Predict Ages for Competition Data
+# -----------------------------------------
+
+# Make sure columns in competition match what lm_final expects:
+# - Same names: Sex, Length, Height, Weight, Shucked.Weight, Viscera.Weight, Shell.Weight, etc.
+# - Same type: Sex must be factor (already handled above)
+
+comp_pred <- predict(lm_final, newdata = competition)
+
+# Attach predictions to a data frame
+# Note: training/competition both use 'id' (lowercase)
+submission <- tibble(
+  ID  = competition$id,  # rename id -> ID
+  age = comp_pred
+)
+
+# Quick check
+head(submission)
+
+# -----------------------------------------
+# 8. Write Submission File for Competition
+# -----------------------------------------
+
+write.csv(submission,
+          "abalone_predictions_competition.csv",
+          row.names = FALSE)
+
+cat("Submission file 'abalone_predictions_competition.csv' written successfully.\n")
+
+
+```
+
+
+```{r}
+library(corrplot)
+
+numeric_vars <- train %>% 
+  select(-id, -Sex, Age)
+
+corr_matrix <- cor(numeric_vars)
+
+corrplot(corr_matrix, method = "color", type = "upper",
+         tl.col = "black", addCoef.col = "black")
+
+
+library(QuantPsyc)
+
+std_coeff <- lm.beta(lm_final)
+std_coeff
+
+
+ggplot(train, aes(x = Sex, y = Age, fill = Sex)) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(train, aes(x = Shell.Weight, y = Age)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  theme_minimal()
+
+```
+
