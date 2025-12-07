@@ -1,0 +1,157 @@
+---
+title: "Project 2 With Elastic Net Base"
+author: "Aayush Dalal"
+date: "2025-12-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# ============================================
+# Abalone Age - Transformed Linear Regression
+# Objective A (with better MAE)
+# ============================================
+
+library(tidyverse)
+
+# ----------------
+# 1. Load the data
+# ----------------
+
+train <- read.csv("train2.csv")
+competition <- read.csv("competition.csv")
+
+train$Sex <- factor(train$Sex)
+competition$Sex <- factor(competition$Sex, levels = levels(train$Sex))
+
+str(train)
+str(competition)
+
+# -------------------------------------------
+# 2. Helper function to add transformations
+# -------------------------------------------
+
+add_transforms <- function(df) {
+  df %>%
+    mutate(
+      # Log transforms (add 1 to avoid log(0))
+      logWeight     = log(Weight + 1),
+      logShucked    = log(Shucked.Weight + 1),
+      logViscera    = log(Viscera.Weight + 1),
+      logShell      = log(Shell.Weight + 1),
+
+      # Quadratic terms
+      Length2       = Length^2,
+      Diameter2     = Diameter^2,
+      Height2       = Height^2,
+      Weight2       = Weight^2,
+      Shucked2      = Shucked.Weight^2,
+      Shell2        = Shell.Weight^2,
+
+      # Interactions
+      Len_Diam      = Length * Diameter,
+      Ht_Wt         = Height * Weight,
+      Shell_Shucked = Shell.Weight * Shucked.Weight
+    )
+}
+
+# --------------------------------------
+# 3. Train / Test split for evaluation
+# --------------------------------------
+
+set.seed(123)  # reproducibility
+
+n <- nrow(train)
+train_idx <- sample(seq_len(n), size = floor(0.8 * n))
+
+train_set <- train[train_idx, ]
+test_set  <- train[-train_idx, ]
+
+# Add transformations
+train_transformed <- add_transforms(train_set)
+test_transformed  <- add_transforms(test_set)
+
+# --------------------------------------
+# 4. Full transformed model on train_set
+# --------------------------------------
+
+full_model <- lm(
+  Age ~ Sex +
+    Length + Diameter + Height + Weight +
+    Shucked.Weight + Viscera.Weight + Shell.Weight +
+    logWeight + logShucked + logViscera + logShell +
+    Length2 + Diameter2 + Height2 + Weight2 +
+    Shucked2 + Shell2 +
+    Len_Diam + Ht_Wt + Shell_Shucked,
+  data = train_transformed
+)
+
+# --------------------------------------
+# 5. Stepwise model selection (AIC)
+# --------------------------------------
+
+step_model <- step(full_model, direction = "both", trace = FALSE)
+
+cat("Selected model formula:\n")
+print(formula(step_model))
+
+summary(step_model)
+
+# --------------------------------------
+# 6. Evaluate MAE on test set
+# --------------------------------------
+
+pred_test <- predict(step_model, newdata = test_transformed)
+MAE <- mean(abs(pred_test - test_set$Age))
+cat("Improved Linear Regression Test MAE:", round(MAE, 4), "\n")
+
+# ---------------------------------------------------
+# 7. Refit selected model on ALL training data
+#    (for best competition performance)
+# ---------------------------------------------------
+
+# Transform full training data
+train_full_transformed <- add_transforms(train)
+
+# Use the same formula chosen by stepwise
+final_formula <- formula(step_model)
+
+final_model_full <- lm(final_formula, data = train_full_transformed)
+
+summary(final_model_full)
+
+# --------------------------------------
+# 8. Predict on competition dataset
+# --------------------------------------
+
+competition_transformed <- add_transforms(competition)
+
+competition_pred <- predict(final_model_full,
+                            newdata = competition_transformed)
+
+# --------------------------------------
+# 9. Build and save competition CSV
+# --------------------------------------
+
+submission_transformed <- tibble(
+  ID  = competition$id,   # rename id -> ID
+  age = competition_pred
+)
+
+head(submission_transformed)
+
+write.csv(
+  submission_transformed,
+  "abalone_predictions_competition_transformed.csv",
+  row.names = FALSE
+)
+
+cat("Competition CSV written: abalone_predictions_competition_transformed.csv\n")
+
+
+```
+

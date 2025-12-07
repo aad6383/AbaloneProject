@@ -1,0 +1,76 @@
+---
+title: "Project 2 Spline-Based"
+author: "Aayush Dalal"
+date: "2025-12-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(splines)
+
+# 1. Load data
+train <- read.csv("train2.csv")
+competition <- read.csv("competition.csv")
+
+train$Sex <- factor(train$Sex)
+competition$Sex <- factor(competition$Sex, levels = levels(train$Sex))
+
+set.seed(123)
+n <- nrow(train)
+train_idx <- sample(seq_len(n), floor(0.8*n))
+
+train_set <- train[train_idx, ]
+test_set  <- train[-train_idx, ]
+
+# 2. Build spline-based model
+spline_model <- lm(
+  Age ~ Sex +
+    ns(Length, df = 4) +
+    ns(Diameter, df = 4) +
+    ns(Height, df = 4) +
+    ns(Weight, df = 4) +
+    ns(Shell.Weight, df = 4) +
+    Shucked.Weight + Viscera.Weight,
+  data = train_set
+)
+
+summary(spline_model)
+
+# 3. Evaluate MAE
+pred_test <- predict(spline_model, newdata = test_set)
+MAE_spline <- mean(abs(pred_test - test_set$Age))
+cat("Spline Model MAE:", round(MAE_spline, 4), "\n")
+
+# 4. Refit final model on ALL training data
+spline_model_full <- lm(
+  Age ~ Sex +
+    ns(Length, df = 4) +
+    ns(Diameter, df = 4) +
+    ns(Height, df = 4) +
+    ns(Weight, df = 4) +
+    ns(Shell.Weight, df = 4) +
+    Shucked.Weight + Viscera.Weight,
+  data = train
+)
+
+# 5. Predict competition
+competition_pred <- predict(spline_model_full, newdata = competition)
+
+submission_spline <- tibble(
+  ID = competition$id,
+  age = competition_pred
+)
+
+write.csv(submission_spline,
+          "abalone_predictions_competition_spline.csv",
+          row.names = FALSE)
+
+cat("Competition CSV written: abalone_predictions_competition_spline.csv\n")
+
+```
+
