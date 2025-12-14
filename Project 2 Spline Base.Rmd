@@ -1,9 +1,9 @@
----
+-
 title: "Project 2 Spline-Based"
 author: "Aayush Dalal"
 date: "2025-12-06"
 output: html_document
----
+-
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -20,57 +20,375 @@ competition <- read.csv("competition.csv")
 train$Sex <- factor(train$Sex)
 competition$Sex <- factor(competition$Sex, levels = levels(train$Sex))
 
+# 2. Train/test split
 set.seed(123)
 n <- nrow(train)
-train_idx <- sample(seq_len(n), floor(0.8*n))
+train_idx <- sample(seq_len(n), size = floor(0.8*n))
 
 train_set <- train[train_idx, ]
 test_set  <- train[-train_idx, ]
 
-# 2. Build spline-based model
-spline_model <- lm(
+# 3. Create a transformation function
+add_features <- function(df) {
+  df %>%
+    mutate(
+      # logs
+      logWeight     = log(Weight + 1),
+      logShucked    = log(Shucked.Weight + 1),
+      logViscera    = log(Viscera.Weight + 1),
+      logShell      = log(Shell.Weight + 1),
+      
+      # polynomials
+      Length2       = Length^2,
+      Diameter2     = Diameter^2,
+      Height2       = Height^2,
+      Weight2       = Weight^2,
+      Shucked2      = Shucked.Weight^2,
+      Shell2        = Shell.Weight^2,
+
+      # interactions
+      Len_Diam      = Length * Diameter,
+      Ht_Wt         = Height * Weight,
+      Shell_Shucked = Shell.Weight * Shucked.Weight
+    )
+}
+
+train_tf <- add_features(train_set)
+test_tf  <- add_features(test_set)
+
+# 4. Build huge model including spline terms
+big_model <- lm(
   Age ~ Sex +
     ns(Length, df = 4) +
     ns(Diameter, df = 4) +
     ns(Height, df = 4) +
     ns(Weight, df = 4) +
     ns(Shell.Weight, df = 4) +
-    Shucked.Weight + Viscera.Weight,
-  data = train_set
+    logWeight + logShucked + logViscera + logShell +
+    Length2 + Diameter2 + Height2 + Weight2 +
+    Shucked2 + Shell2 +
+    Len_Diam + Ht_Wt + Shell_Shucked +
+    Shucked.Weight + Viscera.Weight + Shell.Weight,
+  data = train_tf
 )
 
-summary(spline_model)
+# 5. Run stepwise regression on the HUGE model
+spline_step_model <- step(big_model, direction = "both", trace = FALSE)
 
-# 3. Evaluate MAE
-pred_test <- predict(spline_model, newdata = test_set)
-MAE_spline <- mean(abs(pred_test - test_set$Age))
-cat("Spline Model MAE:", round(MAE_spline, 4), "\n")
+cat("Selected model formula:\n")
+print(formula(spline_step_model))
 
-# 4. Refit final model on ALL training data
-spline_model_full <- lm(
-  Age ~ Sex +
-    ns(Length, df = 4) +
-    ns(Diameter, df = 4) +
-    ns(Height, df = 4) +
-    ns(Weight, df = 4) +
-    ns(Shell.Weight, df = 4) +
-    Shucked.Weight + Viscera.Weight,
-  data = train
-)
+summary(spline_step_model)
 
-# 5. Predict competition
-competition_pred <- predict(spline_model_full, newdata = competition)
+# 6. Compute MAE on test data
+pred_test <- predict(spline_step_model, newdata = test_tf)
+MAE_spline_step <- mean(abs(pred_test - test_set$Age))
+cat("Spline-Stepwise Test MAE:", round(MAE_spline_step, 4), "\n")
 
-submission_spline <- tibble(
-  ID = competition$id,
+
+# 7. Refit on ALL 15,000 rows
+
+train_full_tf <- add_features(train)
+
+final_model_full <- lm(formula(spline_step_model), data = train_full_tf)
+
+
+# 8. Predict competition data
+
+competition_tf <- add_features(competition)
+
+competition_pred <- predict(final_model_full, newdata = competition_tf)
+
+submission_spline_step <- tibble(
+  ID  = competition$id,
   age = competition_pred
 )
 
-write.csv(submission_spline,
-          "abalone_predictions_competition_spline.csv",
-          row.names = FALSE)
+write.csv(
+  submission_spline_step,
+  "abalone_predictions_competition_spline_step.csv",
+  row.names = FALSE
+)
 
-cat("Competition CSV written: abalone_predictions_competition_spline.csv\n")
+cat("Competition CSV written: abalone_predictions_competition_spline_step.csv\n")
+
+
+```
+
+
+# Objective B
+```{r}
+library(tidyverse)
+library(splines)   # used in Analysis 6 (splines vs linear)
+library(scales)    # nicer axis formatting (optional)
+
+
+# 0. Load data
+
+train <- read.csv("train2.csv")
+train$Sex <- factor(train$Sex)
+
+# Quick check
+str(train)
+summary(train)
+
+
+# 1. Data Quality Checks
+
+
+# Missing values
+na_counts <- sapply(train, function(x) sum(is.na(x)))
+na_counts
+
+# Duplicate IDs?
+sum(duplicated(train$id))
+
+# Basic sanity checks (ranges)
+train %>%
+  summarise(
+    min_age = min(Age), max_age = max(Age),
+    min_len = min(Length), max_len = max(Length),
+    min_diam = min(Diameter), max_diam = max(Diameter),
+    min_height = min(Height), max_height = max(Height),
+    min_weight = min(Weight), max_weight = max(Weight)
+  )
+
+# Optional: flag potential zeros (often meaningful, but worth noting)
+zero_counts <- train %>%
+  summarise(
+    zeros_Length = sum(Length == 0),
+    zeros_Diameter = sum(Diameter == 0),
+    zeros_Height = sum(Height == 0),
+    zeros_Weight = sum(Weight == 0)
+  )
+zero_counts
+
+
+# 2. Descriptive Statistics (by Sex)
+
+train %>%
+  group_by(Sex) %>%
+  summarise(
+    n = n(),
+    Age_mean = mean(Age), Age_sd = sd(Age),
+    Weight_mean = mean(Weight), Weight_sd = sd(Weight),
+    ShellW_mean = mean(Shell.Weight), ShellW_sd = sd(Shell.Weight),
+    ShuckedW_mean = mean(Shucked.Weight), ShuckedW_sd = sd(Shucked.Weight),
+    .groups = "drop"
+  )
+
+
+# 3. Distribution of Age (overall and by Sex)
+
+
+# Histogram of Age
+ggplot(train, aes(Age)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Distribution of Abalone Age", x = "Age", y = "Count")
+
+# Age by Sex (boxplot)
+ggplot(train, aes(Sex, Age)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Age Distribution by Sex", x = "Sex", y = "Age")
+
+
+# 4. Correlation Analysis (numeric variables)
+
+num_df <- train %>%
+  select(Age, Length, Diameter, Height, Weight,
+         Shucked.Weight, Viscera.Weight, Shell.Weight)
+
+cor_mat <- cor(num_df)
+round(cor_mat["Age", ], 3)
+
+# Correlation of each predictor with Age (sorted)
+age_cors <- sort(cor_mat["Age", -1], decreasing = TRUE)
+age_cors
+
+# Optional: visualize correlations as a quick heatmap (base ggplot)
+cor_long <- as.data.frame(as.table(cor_mat))
+names(cor_long) <- c("Var1", "Var2", "Corr")
+
+ggplot(cor_long, aes(Var1, Var2, fill = Corr)) +
+  geom_tile() +
+  labs(title = "Correlation Heatmap (Numeric Variables)", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# 5. Key Relationships with Age (scatter + LOESS)
+
+plot_age_vs <- function(xvar) {
+  ggplot(train, aes_string(x = xvar, y = "Age")) +
+    geom_point(alpha = 0.25) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(title = paste("Age vs", xvar), x = xvar, y = "Age")
+}
+
+plot_age_vs("Weight")
+plot_age_vs("Shell.Weight")
+plot_age_vs("Shucked.Weight")
+plot_age_vs("Diameter")
+plot_age_vs("Height")
+plot_age_vs("Length")
+
+# Same plots but colored by Sex (to show group differences)
+plot_age_vs_sex <- function(xvar) {
+  ggplot(train, aes_string(x = xvar, y = "Age", color = "Sex")) +
+    geom_point(alpha = 0.25) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(title = paste("Age vs", xvar, "(colored by Sex)"), x = xvar, y = "Age")
+}
+
+plot_age_vs_sex("Weight")
+plot_age_vs_sex("Shell.Weight")
+
+
+# 6. Interaction / Shape Insight (Length × Diameter)
+
+
+# Create a simple "shape" measure: Length-to-Diameter ratio
+train <- train %>%
+  mutate(Len_Diam_Ratio = ifelse(Diameter == 0, NA, Length / Diameter))
+
+summary(train$Len_Diam_Ratio)
+
+# Age vs Length colored by Diameter (shape effect)
+ggplot(train, aes(Length, Age, color = Diameter)) +
+  geom_point(alpha = 0.35) +
+  scale_color_continuous(labels = label_number()) +
+  labs(title = "Age vs Length (colored by Diameter)", x = "Length", y = "Age")
+
+# Age vs Length/Diameter ratio
+ggplot(train, aes(Len_Diam_Ratio, Age)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Age vs Length-to-Diameter Ratio", x = "Length / Diameter", y = "Age")
+
+
+# 7. Shell vs Meat Tradeoff Insight
+
+ggplot(train, aes(Shell.Weight, Shucked.Weight, color = Age)) +
+  geom_point(alpha = 0.35) +
+  labs(
+    title = "Shell Weight vs Shucked Weight (colored by Age)",
+    x = "Shell.Weight", y = "Shucked.Weight"
+  )
+
+# Add a derived feature: shell-to-total ratio (guard against divide-by-zero)
+train <- train %>%
+  mutate(Shell_to_Total = ifelse(Weight == 0, NA, Shell.Weight / Weight))
+
+summary(train$Shell_to_Total)
+
+ggplot(train, aes(Shell_to_Total, Age)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Age vs Shell-to-Total Weight Ratio", x = "Shell.Weight / Weight", y = "Age")
+
+
+# 8. (Analysis 6) Why Nonlinear Models Help: Linear vs LOESS + Residual Diagnostics
+
+
+# 8.1 Linear vs LOESS on Weight
+ggplot(train, aes(Weight, Age)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linewidth = 1) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue", linewidth = 1) +
+  labs(
+    title = "Age vs Weight: Linear Fit vs Nonlinear Smooth",
+    subtitle = "Red = Linear regression line, Blue = LOESS smoother"
+  )
+
+# 8.2 Residuals from simple linear model
+ols_simple <- lm(Age ~ Weight, data = train)
+
+ggplot(data.frame(fitted = fitted(ols_simple),
+                  residuals = resid(ols_simple)),
+       aes(fitted, residuals)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Residuals vs Fitted (Simple OLS: Age ~ Weight)",
+       x = "Fitted Age", y = "Residuals")
+
+# 8.3 Residuals after adding transformations
+ols_transformed <- lm(Age ~ Weight + I(Weight^2) + log(Weight + 1), data = train)
+
+ggplot(data.frame(fitted = fitted(ols_transformed),
+                  residuals = resid(ols_transformed)),
+       aes(fitted, residuals)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Residuals vs Fitted (Transformed OLS)",
+       x = "Fitted Age", y = "Residuals")
+
+# 8.4 Optional: compare AIC for linear vs spline on Weight (both are linear regression models)
+ols_weight <- lm(Age ~ Weight, data = train)
+spline_weight <- lm(Age ~ ns(Weight, df = 4), data = train)
+AIC(ols_weight, spline_weight)
+
+
+# 9. Optional: Quick “importance” proxy via single-variable R^2
+#    (Not the same as feature importance, but useful for insight)
+
+r2_single <- function(formula_obj) summary(lm(formula_obj, data = train))$r.squared
+
+single_r2 <- tibble(
+  predictor = c("Length", "Diameter", "Height", "Weight",
+                "Shucked.Weight", "Viscera.Weight", "Shell.Weight", "Sex"),
+  r2 = c(
+    r2_single(Age ~ Length),
+    r2_single(Age ~ Diameter),
+    r2_single(Age ~ Height),
+    r2_single(Age ~ Weight),
+    r2_single(Age ~ Shucked.Weight),
+    r2_single(Age ~ Viscera.Weight),
+    r2_single(Age ~ Shell.Weight),
+    r2_single(Age ~ Sex)
+  )
+) %>% arrange(desc(r2))
+
+single_r2
+
+ggplot(single_r2, aes(reorder(predictor, r2), r2)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Single-Predictor R² (Strength vs Age)", x = "Predictor", y = "R²")
+
+
+cat("\nObjective B analysis complete.\n")
+
+
+```
+
+
+```{r}
+library(tidyverse)
+
+model_mae <- tibble(
+  Model = c(
+    "Baseline OLS",
+    "Elastic Net",
+    "Spline–Stepwise OLS"
+  ),
+  MAE = c(
+    1.44,    # baseline
+    1.44,    # elastic net
+    1.4182   # spline-stepwise
+  )
+)
+
+ggplot(model_mae, aes(x = reorder(Model, MAE), y = MAE)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Test MAE Comparison Across Modeling Approaches",
+    x = "Model",
+    y = "Mean Absolute Error (Years)"
+  ) +
+  theme_minimal()
+
+
+ggsave("mae_model_comparison.png", width = 6.5, height = 4, dpi = 300)
 
 ```
 
